@@ -1,0 +1,188 @@
+name: Build PHP binary for rep2-allinone
+
+on:
+  workflow_dispatch:
+    inputs:
+      php-version: { description: PHP version, default: "8.5" }
+      ref:         { description: static-php-cli ref, default: "rep2" }
+
+concurrency:
+  group: build-rep2-unix
+  cancel-in-progress: false
+
+env:
+  EXTENSIONS: bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,mbregex,mbstring,mysqlnd,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pgsql,phar,posix,session,sqlite3,pdo_sqlite,xml,zip,zlib
+
+jobs:
+  build:
+    name: "Build ${{ inputs.php-version }} on ${{ matrix.os }}-${{ matrix.arch }}"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     os: linux, arch: x86_64,  upx: "--with-upx-pack" }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: aarch64, upx: "--with-upx-pack" }
+          - { runner: macos-15,         os: macos, arch: aarch64, upx: "" }
+          - { runner: macos-15-intel,   os: macos, arch: x86_64,  upx: "" }
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Apply local patches
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for p in patches/*.patch; do
+            echo "Applying $p"
+            git apply "$p"
+          done
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer
+          extensions: curl, openssl, mbstring, filter
+          ini-values: memory_limit=-1
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: ${{ runner.os }}-spc-php84-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-spc-php84
+
+      - name: Install Dependencies
+        run: composer update -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist --no-dev
+
+      - name: Run Build Tests (doctor)
+        run: bin/spc doctor --auto-fix
+
+      - name: Install UPX
+        if: matrix.upx != ''
+        run: bin/spc install-pkg upx
+
+      - name: Build PHP
+        shell: bash
+        run: |
+          # spc exit code 75 = DOWNLOAD_ERROR. Retry up to 3 times on download errors only.
+          for attempt in 1 2 3; do
+            echo "Build attempt ${attempt}/3"
+            if bin/spc build --build-cli --build-fpm "${{ env.EXTENSIONS }}" --debug \
+                 ${{ matrix.upx }} \
+                 --dl-with-php="${{ inputs.php-version }}" \
+                 --dl-retry=5 \
+                 --dl-prefer-binary \
+                 --dl-ignore-cache=php-src; then
+              exit 0
+            else
+              code=$?
+            fi
+            echo "::warning::Build attempt ${attempt}/3 failed with exit code ${code}"
+            if [ "$code" -ne 75 ]; then
+              exit "$code"
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep 30
+            fi
+          done
+          exit 75
+
+      - name: Pack PHP
+        shell: bash
+        run: |
+          mkdir -p tmp_dist dist
+
+          cp buildroot/bin/php tmp_dist/
+          cp buildroot/bin/php-fpm tmp_dist/
+
+          bin/spc dev:info php --json --no-ansi > php-info.json
+          PHPVER="$(php -r '$j = json_decode(file_get_contents("php-info.json"), true); echo $j["cache"]["source"]["info"]["version"] ?? "";')"
+          if [ -z "$PHPVER" ]; then
+            echo "Cannot resolve PHP version from dev:info php --json"
+            exit 1
+          fi
+
+          chmod -R 755 tmp_dist
+          mv buildroot/build-manifest.json "build-manifest-${{ matrix.os }}-${{ matrix.arch }}.json"
+
+          tar -czf "dist/php-$PHPVER-cli-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C tmp_dist/ php
+          tar -czf "dist/php-$PHPVER-fpm-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" -C tmp_dist/ php-fpm
+          cp "build-manifest-${{ matrix.os }}-${{ matrix.arch }}.json" dist/
+
+          echo "PHPVER=$PHPVER" >> "$GITHUB_ENV"
+          ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          hidden: true
+          if-no-files-found: error
+
+      - name: Upload logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: spc-logs-${{ matrix.os }}-${{ matrix.arch }}
+          path: log/*.log
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve PHP version
+        shell: bash
+        run: |
+          set -eu
+          f=$(ls dist/php-*-cli-linux-x86_64.tar.gz | head -n1)
+          PHPVER=$(basename "$f" | sed -E 's/^php-([0-9.]+)-cli-.*$/\1/')
+          echo "PHPVER=$PHPVER" >> "$GITHUB_ENV"
+          COMMIT_TS=$(TZ=Asia/Tokyo date +%Y%m%d%H%M)
+          echo "TAG=php-${PHPVER}-${COMMIT_TS}" >> "$GITHUB_ENV"
+
+      - name: Publish release (dated tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/* --clobber
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" dist/* \
+              --title "Build $TAG" \
+              --notes "Automated static-php build for rep2-allinone (PHP ${{ env.PHPVER }})."
+          fi
+
+      - name: Publish release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh release view latest -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create latest -R "$GITHUB_REPOSITORY" --title "Latest Build" --notes "Latest static-php build for rep2-allinone."
+          gh release upload latest -R "$GITHUB_REPOSITORY" dist/* --clobber
+
+      - name: Prune old dated releases (keep 5)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' | \
+            grep -E '^php-[0-9.]+-[0-9]{12}$' | sort -r | tail -n +6 | \
+            while read -r tag; do
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" -y --cleanup-tag
+            done

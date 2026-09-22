@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  GITHUB_TOKEN: ${{ secrets.S_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
   EXTENSIONS: bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbregex,mbstring,mysqlnd,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pgsql,phar,posix,session,sqlite3,pdo_sqlite,xml,zip,zlib
 
 jobs:

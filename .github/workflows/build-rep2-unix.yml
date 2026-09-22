@@ -52,16 +52,20 @@ jobs:
 
       # macos-15-intel: setup-php hangs 25-28 min since 2026-09 (Homebrew stopped
       # publishing x86_64 CI bottles on 2026-08-28), so use the preinstalled
-      # PHP 8.5.9 + Composer 2.10.2 (verified by probe-macos-toolchain workflow).
+      # PHP 8.5.9 + Composer 2.10.2 (verified by probe on 2026-09-22).
       - name: Verify preinstalled PHP toolchain
         if: matrix.runner == 'macos-15-intel'
         shell: bash
         run: |
+          set -x
+          which -a php || true
+          php -v || true
+          php -m || true
+          composer --version || true
           set -eu
-          php -v | grep -qE '^PHP (8\.[4-9]|[9-]\.)' || { echo "Preinstalled PHP is too old"; php -v; exit 1; }
+          php -v | grep -qE '^PHP (8\.[4-9]|[9-]\.)' || { echo "Preinstalled PHP is too old"; exit 1; }
           php -m | grep -qx mbstring || { echo "mbstring missing"; exit 1; }
           php -m | grep -qx zlib || { echo "zlib missing"; exit 1; }
-          composer --version
 
       - name: Cache composer packages
         uses: actions/cache@v4

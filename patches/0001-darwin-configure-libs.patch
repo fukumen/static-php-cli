@@ -1,0 +1,29 @@
+diff --git a/src/Package/Target/php/unix.php b/src/Package/Target/php/unix.php
+index 8d5845bf..b228d2d8 100644
+--- a/src/Package/Target/php/unix.php
++++ b/src/Package/Target/php/unix.php
+@@ -143,12 +143,23 @@ trait unix
+             $configure_str = str_replace('--with-pic', '--enable-pic', $configure_str);
+         }
+ 
++        // reuse the same make vars so configure conftest links use the same LIBS.
++        // Darwin only: cmake-built libcurl.a carries deps (brotli, zstd, libssh2, nghttp2,
++        // ldap, krb5, libcares) that libcurl.pc does not list, so runtime-only LIBS breaks
++        // ext/curl's link conftest. On Linux, keep runtime-only LIBS as upstream #1236
++        // fixed polyfill misdetection for old-glibc SPC_TARGET builds.
++        if (SystemTarget::getTargetOS() === 'Darwin') {
++            $configure_libs = $this->makeVars($installer)['EXTRA_LIBS'] ?? '';
++        } else {
++            $configure_libs = SystemTarget::getRuntimeLibs();
++        }
++
+         // run ./configure with args
+         $this->seekPhpSrcLogFileOnException(fn () => shell()->cd($package->getSourceDir())->setEnv([
+             'CFLAGS' => getenv('SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS'),
+             'CPPFLAGS' => "-I{$package->getIncludeDir()}",
+             'LDFLAGS' => "-L{$package->getLibDir()} " . getenv('SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS'),
+-            'LIBS' => SystemTarget::getRuntimeLibs(),
++            'LIBS' => $configure_libs,
+         ])->exec($configure_str), $package->getSourceDir());
+     }
+ 

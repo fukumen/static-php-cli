@@ -194,8 +194,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          gh release view latest -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
-            gh release create latest -R "$GITHUB_REPOSITORY" --title "Latest Build" --notes "Latest static-php build for rep2-allinone."
+          # Recreate the release so its tag and published date track the built commit
+          if gh release view latest -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release delete latest -R "$GITHUB_REPOSITORY" -y --cleanup-tag
+          fi
+          gh release create latest -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Latest Build" \
+            --notes "Latest static-php build for rep2-allinone (PHP ${{ env.PHPVER }})."
           gh release upload latest -R "$GITHUB_REPOSITORY" dist/* --clobber
 
       - name: Prune old dated releases (keep 5)

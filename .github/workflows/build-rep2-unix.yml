@@ -63,9 +63,12 @@ jobs:
           php -m || true
           composer --version || true
           set -eu
-          php -v | grep -qE '^PHP (8\.[4-9]|[9-]\.)' || { echo "Preinstalled PHP is too old"; exit 1; }
-          php -m | grep -qx mbstring || { echo "mbstring missing"; exit 1; }
-          php -m | grep -qx zlib || { echo "zlib missing"; exit 1; }
+          # grep -q exits early after a match and can SIGPIPE the writer;
+          # with pipefail that turns a passing check into a spurious failure
+          # (seen on macos-15-intel). Consume the full output instead.
+          php -v | grep -E '^PHP (8\.[4-9]|[9-]\.)' > /dev/null || { echo "Preinstalled PHP is too old"; exit 1; }
+          php -m | grep -x mbstring > /dev/null || { echo "mbstring missing"; exit 1; }
+          php -m | grep -x zlib > /dev/null || { echo "zlib missing"; exit 1; }
 
       - name: Cache composer packages
         uses: actions/cache@v4

@@ -1,0 +1,42 @@
+diff --git a/src/Package/Library/ngtcp2.php b/src/Package/Library/ngtcp2.php
+index 0a5ca8f5..b5d420f1 100644
+--- a/src/Package/Library/ngtcp2.php
++++ b/src/Package/Library/ngtcp2.php
+@@ -38,7 +38,9 @@ class ngtcp2
+                 'openssl',
+                 fn (LibraryPackage $openssl) => implode(' ', [
+                     '--with-openssl=yes',
+-                    "OPENSSL_LIBS=\"{$openssl->getStaticLibFiles()}\"",
++                    // libtool embeds explicit .a paths into libngtcp2_crypto_ossl.a; newer
++                    // Apple ar (Xcode 26.4+) drops non-mach-o members, so pass -l flags.
++                    'OPENSSL_LIBS="' . $this->getOpenSSLLinkFlags($openssl) . '"',
+                     "OPENSSL_CFLAGS=\"-I{$openssl->getIncludeDir()}\"",
+                 ]),
+                 '--with-openssl=no'
+@@ -48,10 +50,22 @@ class ngtcp2
+             ->make();
+ 
+         $lib->patchPkgconfPrefix(['libngtcp2.pc', 'libngtcp2_crypto_ossl.pc'], PKGCONF_PATCH_PREFIX);
++    }
+ 
+-        // On macOS, the static library may contain other static libraries
+-        // ld: archive member 'libssl.a' not a mach-o file in libngtcp2_crypto_ossl.a
+-        $AR = getenv('AR') ?: 'ar';
+-        shell()->cd($lib->getLibDir())->exec("{$AR} -t libngtcp2_crypto_ossl.a | grep '\\.a\$' | xargs -n1 {$AR} d libngtcp2_crypto_ossl.a");
++    /**
++     * Build -L/-l flags for the openssl package and its dependencies.
++     */
++    private function getOpenSSLLinkFlags(LibraryPackage $openssl): string
++    {
++        $flags = ['-L' . $openssl->getLibDir()];
++        foreach (explode(' ', $openssl->getStaticLibFiles()) as $path) {
++            if (str_starts_with($path, '-')) {
++                $flags[] = $path;
++                continue;
++            }
++            $name = basename($path, '.a');
++            $flags[] = '-l' . (str_starts_with($name, 'lib') ? substr($name, 3) : $name);
++        }
++        return implode(' ', $flags);
+     }
+ }

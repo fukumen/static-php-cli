@@ -142,6 +142,7 @@ class php extends TargetPackage
         $package->addBuildOption('disable-opcache-jit', null, null, 'Disable opcache jit');
         $package->addBuildOption('with-config-file-path', null, InputOption::VALUE_REQUIRED, 'Set the path in which to look for php.ini', PHP_OS_FAMILY === 'Windows' ? null : '/usr/local/etc/php');
         $package->addBuildOption('with-config-file-scan-dir', null, InputOption::VALUE_REQUIRED, 'Set the directory to scan for .ini files after reading php.ini', PHP_OS_FAMILY === 'Windows' ? null : '/usr/local/etc/php/conf.d');
+        $package->addBuildOption('with-sysconfdir', null, InputOption::VALUE_REQUIRED, 'Set the sysconfdir (e.g. /etc/php-zts) used by configure (not available on Windows)');
         $package->addBuildOption('with-hardcoded-ini', 'I', InputOption::VALUE_IS_ARRAY | InputOption::VALUE_REQUIRED, 'Patch PHP source code, inject hardcoded INI');
         $package->addBuildOption('enable-zts', null, null, 'Enable thread safe support');
         $package->addBuildOption('no-smoke-test', null, InputOption::VALUE_OPTIONAL, 'Disable smoke test for specific SAPIs, or all if no value provided', false);
@@ -171,8 +172,8 @@ class php extends TargetPackage
             $package->addBuildOption('build-micro', null, null, 'Build micro SAPI');
             $package->addBuildOption('build-cli', null, null, 'Build cli SAPI');
             $package->addBuildOption('build-fpm', null, null, 'Build fpm SAPI (not available on Windows)');
-            $package->addBuildOption('build-embed', null, null, 'Build embed SAPI (not available on Windows)');
-            $package->addBuildOption('build-frankenphp', null, null, 'Build FrankenPHP SAPI (not available on Windows)');
+            $package->addBuildOption('build-embed', null, null, 'Build embed SAPI');
+            $package->addBuildOption('build-frankenphp', null, null, 'Build FrankenPHP SAPI');
             $package->addBuildOption('build-cgi', null, null, 'Build cgi SAPI');
             $package->addBuildOption('build-all', null, null, 'Build all SAPI');
         }
@@ -410,8 +411,10 @@ class php extends TargetPackage
      *
      * Existing dirs are classified by markers: a link/junction is our own (refreshed
      * when its target differs), a .spc-ext-sync marker is our Windows copy fallback
-     * (refreshed), anything else is bundled with php-src (e.g. zip, or imap on
-     * PHP < 8.5) and left untouched.
+     * (refreshed), a directory with a configure script is bundled with php-src
+     * (e.g. zip, or imap on PHP < 8.4) and left untouched. Directories without a
+     * configure script (e.g. the ext/imap/tests leftover in PHP 8.4.27 / 8.5.12)
+     * are stubs and get replaced by the extension artifact.
      */
     #[BeforeStage('php', 'build')]
     public function syncExtensionSources(PackageInstaller $installer): void
@@ -444,11 +447,12 @@ class php extends TargetPackage
             if (FileSystem::isLink($ext_dir)) {
                 FileSystem::removeLink($ext_dir);
             } elseif (is_dir($ext_dir)) {
-                if (!file_exists("{$ext_dir}/.spc-ext-sync")) {
-                    // bundled with php-src, keep it (used when the extension is built shared only)
+                if (!file_exists("{$ext_dir}/.spc-ext-sync") && $ext->hasConfigureScript($ext_dir)) {
+                    // bundled with php-src, keep it
                     logger()->debug("Extension [{$ext->getName()}] keeps bundled source at {$ext_dir}.");
                     continue;
                 }
+                // stub dir left by php-src for an unbundled extension, or our stale copy
                 FileSystem::removeDir($ext_dir);
             }
             if (PHP_OS_FAMILY === 'Windows') {
